@@ -135,6 +135,8 @@ body {
 /* ── HEADER ──────────────────────────────────────────── */
 header {
   background: var(--header-bg);
+  background-size: 200% 200%;
+  animation: header-gradient-flow 8s ease infinite;
   color: white;
   padding: 20px 40px;
   display: flex;
@@ -143,6 +145,12 @@ header {
   border-bottom: 1px solid rgba(255,255,255,0.08);
   box-shadow: 0 4px 20px rgba(0,0,0,0.15);
   transition: background 0.3s ease;
+}
+
+@keyframes header-gradient-flow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 .h-icon-container {
   background: rgba(255,255,255,0.08);
@@ -154,6 +162,11 @@ header {
   justify-content: center;
   color: #34d399;
   box-shadow: inset 0 2px 4px rgba(255,255,255,0.05);
+  flex-shrink: 0;
+}
+.h-info {
+  flex: 1;
+  min-width: 0; /* Allow shrinking below content size */
 }
 .h-title {
   font-family: 'Outfit', sans-serif;
@@ -164,6 +177,9 @@ header {
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .h-sub {
   font-size: 13px;
@@ -171,6 +187,9 @@ header {
   opacity: 0.8;
   margin-top: 3px;
   font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .h-right {
   margin-left: auto;
@@ -1008,6 +1027,8 @@ input[type="text"]:focus {
 }
 
 /* ── RESPONSIVE DESIGN ───────────────────────────────── */
+
+/* ── 1024px: Tablet horizontal ─────────────────────── */
 @media (max-width: 1024px) {
   .grid-2 {
     grid-template-columns: 1fr;
@@ -1020,62 +1041,183 @@ input[type="text"]:focus {
   main {
     padding: 24px 20px;
   }
+  /* Modal controls: allow wrapping sooner */
+  .ocr-modal-controls {
+    gap: 10px;
+  }
 }
 
+/* ── 768px: Tablet vertical ─────────────────────────── */
 @media (max-width: 768px) {
+  /* Header */
   header {
-    padding: 16px 20px;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 12px;
+    padding: 14px 20px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .h-info {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .h-title {
+    font-size: 16px;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: initial;
+  }
+  .h-sub {
+    font-size: 11.5px;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: initial;
   }
   .h-right {
     margin-left: 0;
     width: 100%;
-    justify-content: space-between;
+    justify-content: flex-end;
+    padding: 6px 12px;
   }
+
+  /* Tabs */
   .tabs-container {
-    padding: 8px 20px;
+    padding: 8px 16px;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     justify-content: flex-start;
+    scrollbar-width: none;
   }
+  .tabs-container::-webkit-scrollbar { display: none; }
   .tabs-wrapper {
     display: flex;
     width: max-content;
   }
   .tab {
-    padding: 8px 16px;
-    font-size: 13px;
+    padding: 8px 14px;
+    font-size: 12.5px;
   }
+
+  /* Main stats */
   .stats-row {
     grid-template-columns: 1fr;
     gap: 12px;
     margin-bottom: 24px;
   }
+  main {
+    padding: 20px 16px;
+  }
+
+  /* OCR Modal */
+  .ocr-modal-content {
+    width: 98vw;
+    height: 94vh;
+    border-radius: 18px;
+  }
+  .ocr-modal-header {
+    padding: 12px 14px;
+    gap: 8px;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .ocr-modal-title {
+    font-size: 14px;
+  }
+  /* Controls: scrollable row on tablet */
+  .ocr-modal-controls {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+    padding-bottom: 4px;
+    gap: 8px;
+  }
+  .ocr-modal-controls::-webkit-scrollbar { display: none; }
+  .ocr-control-group {
+    flex-shrink: 0;
+  }
+  .ocr-modal-body {
+    padding: 10px;
+  }
+  .ocr-modal-pre {
+    padding: 12px;
+    border-radius: 12px;
+  }
+  .ocr-modal-close {
+    top: 10px;
+    right: 12px;
+    width: 32px;
+    height: 32px;
+  }
+
+  /* Dropdown menus: clamp width so they don't overflow screen */
+  .dropdown-menu {
+    min-width: 180px;
+    max-width: calc(100vw - 40px);
+  }
+
+  /* Font size selector smaller */
+  .fontsize-btn {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
 }
 
+/* ── 480px: Mobile ───────────────────────────────────── */
 @media (max-width: 480px) {
+  /* Header */
+  header {
+    padding: 12px 16px;
+    gap: 8px;
+  }
+  .h-icon-container {
+    padding: 6px !important;
+  }
+  .h-icon-container img {
+    width: 26px !important;
+    height: 26px !important;
+  }
+  .h-title {
+    font-size: 14px;
+    line-height: 1.3;
+  }
+  .h-sub {
+    font-size: 10.5px;
+    margin-top: 2px;
+  }
+  .h-right {
+    padding: 5px 10px;
+    font-size: 11.5px;
+    gap: 8px;
+  }
+
+  /* Main content */
   main {
-    padding: 16px 12px;
+    padding: 14px 12px;
   }
   .card-header {
-    padding: 16px;
+    padding: 14px 16px;
+    font-size: 14px;
   }
   .card-body {
-    padding: 16px;
+    padding: 14px 16px;
   }
+
+  /* Upload zone */
   .drop-zone {
-    padding: 30px 16px;
-    min-height: 180px;
+    padding: 28px 14px;
+    min-height: 170px;
   }
+
+  /* Classifier */
   .clf-grid {
     grid-template-columns: 1fr;
-    gap: 12px;
+    gap: 10px;
   }
   .clf-body {
-    padding: 18px 16px;
+    padding: 16px 14px;
   }
+
+  /* Score bars */
   .score-bar-row {
     flex-direction: column;
     align-items: flex-start;
@@ -1088,6 +1230,112 @@ input[type="text"]:focus {
     text-align: left;
     width: 100%;
     margin-top: 2px;
+  }
+
+  /* OCR Modal — full screen on mobile */
+  .ocr-modal-content {
+    width: 100vw;
+    height: 100dvh;
+    border-radius: 0;
+    border-radius: 0 !important;
+  }
+  .ocr-modal-header {
+    padding: 10px 12px;
+    gap: 6px;
+  }
+  .ocr-modal-title {
+    font-size: 13px;
+  }
+  .ocr-modal-title svg {
+    width: 16px;
+    height: 16px;
+  }
+  .ocr-modal-controls {
+    gap: 6px;
+    padding-bottom: 6px;
+  }
+  .ocr-control-group .selector-label {
+    font-size: 10px;
+  }
+  .dropdown-trigger {
+    padding: 5px 10px;
+    font-size: 11.5px;
+    gap: 5px;
+  }
+  .fontsize-btn {
+    padding: 4px 8px;
+    font-size: 10.5px;
+  }
+  .tts-btn {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+  .tts-btn.tts-skip {
+    width: 28px;
+    height: 28px;
+  }
+  .ocr-modal-body {
+    padding: 8px;
+  }
+  .ocr-modal-pre {
+    padding: 10px;
+    border-radius: 10px;
+    font-size: 12.5px;
+  }
+  .ocr-modal-close {
+    top: 8px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+  }
+
+  /* Dropdown: prevent overflow */
+  .dropdown-menu {
+    min-width: 160px;
+    max-width: calc(100vw - 24px);
+    left: auto;
+    right: 0;
+  }
+
+  /* Custom alert */
+  .custom-alert-box {
+    padding: 20px 18px;
+    border-radius: 18px;
+  }
+  .custom-alert-title {
+    font-size: 15px;
+  }
+
+  /* Steps */
+  .step-item {
+    padding: 12px;
+    gap: 12px;
+  }
+}
+
+/* ── 360px: Small mobile (e.g. Galaxy S5) ───────────── */
+@media (max-width: 360px) {
+  .h-title {
+    font-size: 13px;
+  }
+  .tab {
+    padding: 7px 12px;
+    font-size: 12px;
+    gap: 5px;
+  }
+  .tab-icon {
+    width: 14px;
+    height: 14px;
+  }
+  .ocr-modal-title span {
+    display: none; /* Hide long title, icon is enough */
+  }
+  .fontsize-options {
+    gap: 1px;
+  }
+  .fontsize-btn {
+    padding: 4px 6px;
+    font-size: 10px;
   }
 }
 
@@ -1210,10 +1458,20 @@ input[type="text"]:focus {
   font-weight: 700;
   font-size: 16px;
   color: var(--text-main);
+  min-width: 0; /* Allow shrinking */
+  max-width: 100%;
+}
+
+.ocr-modal-title span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .ocr-modal-title svg {
   color: var(--primary);
+  flex-shrink: 0;
 }
 
 .ocr-fontsize-selector {
@@ -1297,7 +1555,7 @@ input[type="text"]:focus {
   height: 100%;
   padding: 20px;
   background: var(--card-bg);
-  border: 1px solid var(--card-border);
+  border: 2px solid var(--card-border);
   border-radius: 16px;
   font-family: 'Courier New', monospace;
   font-size: 13.5px;
@@ -1307,6 +1565,40 @@ input[type="text"]:focus {
   overflow-y: auto;
   line-height: 1.7;
   transition: font-size 0.2s ease, background 0.3s ease, color 0.3s ease;
+}
+
+/* Gradiente animado y resplandor reactivo del TTS (Efecto Aurora IA) */
+.ocr-modal-pre.tts-active {
+  border: 2px solid transparent;
+  /* Gradiente premium lineal rotativo compatible con todos los navegadores */
+  background: 
+    linear-gradient(var(--card-bg), var(--card-bg)) padding-box, 
+    linear-gradient(135deg, #059669, #06b6d4, #3b82f6, #8b5cf6, #059669) border-box;
+  background-size: 300% 300%;
+  animation: border-flow-ai 6s linear infinite;
+  
+  /* Aurora exterior super visible multicromática e interior cian suave */
+  box-shadow: 
+    0 15px 50px -5px rgba(59, 130, 246, calc(0.25 + 0.55 * var(--voice-vol, 0))), /* Destello azul exterior */
+    0 5px 30px -3px rgba(139, 92, 246, calc(0.20 + 0.45 * var(--voice-vol, 0))),   /* Destello violeta exterior */
+    inset 0 0 calc(15px + 35px * var(--voice-vol, 0)) rgba(6, 182, 212, calc(0.12 + 0.45 * var(--voice-vol, 0))); /* Destello cian interno suave */
+  transition: box-shadow 0.08s ease;
+}
+
+/* En temas de alto contraste, se desactivan los gradientes complejos para garantizar accesibilidad */
+.ocr-modal-pre.theme-high-contrast-dark.tts-active,
+.ocr-modal-pre.theme-high-contrast-light.tts-active {
+  border: 2px solid currentColor !important;
+  background: none !important;
+  background-color: inherit !important;
+  box-shadow: none !important;
+  animation: none !important;
+}
+
+@keyframes border-flow-ai {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 
 /* Clases de tamaño de fuente para el visualizador modal */
@@ -1410,6 +1702,29 @@ input[type="text"]:focus {
   transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1), 
               transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
               visibility 0.2s;
+  overscroll-behavior: contain;
+}
+
+/* Cuando el menú usa position:fixed (en móvil, aplicado por JS),
+   desactivar el transform de animación CSS para no desplazar las coordenadas calculadas */
+.dropdown-menu[style*="position: fixed"],
+.dropdown-menu[style*="position:fixed"] {
+  transform: none !important;
+  /* Scrollbar delgada y sutil dentro del menú */
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* Indicador visual de scroll: sombra en el borde inferior cuando hay más opciones */
+.dropdown-menu[style*="position: fixed"]:not(:last-child),
+.dropdown-menu[style*="overflow-y: auto"] {
+  background:
+    /* Sombra superior (scroll hacia arriba) */
+    linear-gradient(var(--card-bg) 30%, transparent) top / 100% 12px no-repeat,
+    /* Sombra inferior (scroll hacia abajo) */
+    linear-gradient(transparent, rgba(0,0,0,0.08)) bottom / 100% 16px no-repeat,
+    var(--card-bg);
+  background-attachment: local, local, scroll;
 }
 
 .custom-dropdown.active .dropdown-menu {
@@ -1481,6 +1796,19 @@ input[type="text"]:focus {
   align-items: center;
 }
 
+.tts-btn.tts-pause {
+  background: rgba(234, 179, 8, 0.06);
+  color: #b45309;
+  border-color: rgba(234, 179, 8, 0.4);
+}
+
+.tts-btn.tts-pause:hover {
+  background: rgba(234, 179, 8, 0.12);
+  border-color: #d97706;
+  color: #92400e;
+  box-shadow: 0 4px 8px rgba(234, 179, 8, 0.12);
+}
+
 .tts-btn:hover {
   background: var(--bg);
   border-color: var(--primary);
@@ -1531,9 +1859,26 @@ input[type="text"]:focus {
 }
 
 .ocr-modal-pre.font-dyslexic {
-  font-family: 'OpenDyslexic', 'OpenDyslexic3', sans-serif !important;
+  font-family: 'Open-Dyslexic', 'OpenDyslexic', 'OpenDyslexic3', sans-serif !important;
   line-height: 1.9 !important;
   letter-spacing: 0.03em !important;
+}
+
+.ocr-modal-pre.font-atkinson {
+  font-family: 'Atkinson Hyperlegible', sans-serif !important;
+  line-height: 1.75 !important;
+  letter-spacing: 0.015em !important;
+}
+
+.ocr-modal-pre.font-lexend {
+  font-family: 'Lexend', sans-serif !important;
+  line-height: 1.8 !important;
+  letter-spacing: 0.02em !important;
+}
+
+.ocr-modal-pre.font-roboto-slab {
+  font-family: 'Roboto Slab', serif !important;
+  line-height: 1.75 !important;
 }
 
 /* Clases de Temas de Contraste para el Visualizador Modal */
@@ -1572,6 +1917,53 @@ input[type="text"]:focus {
 .ocr-modal-pre.theme-cream ::selection {
   background-color: #d2c19d !important;
   color: #5b4636 !important;
+}
+
+/* Noche de Yau (Oscuro Suave) */
+.ocr-modal-pre.theme-soft-dark {
+  background-color: #1e2530 !important;
+  color: #e2e8f0 !important;
+  border-color: #334155 !important;
+}
+
+.ocr-modal-pre.theme-soft-dark ::selection {
+  background-color: #3b82f6 !important;
+  color: #ffffff !important;
+}
+
+/* Verde Municipal (Identidad de Yau) */
+.ocr-modal-pre.theme-municipal-green {
+  background-color: #f0fdf4 !important;
+  color: #065f46 !important;
+  border-color: #a7f3d0 !important;
+}
+
+.ocr-modal-pre.theme-municipal-green ::selection {
+  background-color: #a7f3d0 !important;
+  color: #065f46 !important;
+}
+
+.dark-mode .ocr-modal-pre.theme-municipal-green {
+  background-color: #064e3b !important;
+  color: #ecfdf5 !important;
+  border-color: #047857 !important;
+}
+
+.dark-mode .ocr-modal-pre.theme-municipal-green ::selection {
+  background-color: #047857 !important;
+  color: #ecfdf5 !important;
+}
+
+/* Luz Cálida */
+.ocr-modal-pre.theme-sunny-yellow {
+  background-color: #fefbeb !important;
+  color: #78350f !important;
+  border-color: #fde68a !important;
+}
+
+.ocr-modal-pre.theme-sunny-yellow ::selection {
+  background-color: #fde68a !important;
+  color: #78350f !important;
 }
 
 /* ── CUSTOM ALERT DIALOG ─────────────────────────────── */
@@ -1669,17 +2061,120 @@ input[type="text"]:focus {
   display: inline;
 }
 
-.tts-word.reading-active {
-  background-color: rgba(16, 185, 129, 0.25); /* Emerald translucent background */
-  color: #047857; /* Emerald-700 for high readability in light mode */
-  font-weight: 600;
-  box-shadow: 0 1px 0 var(--primary); /* subtle underline-like bar */
+/* --- Variables y Estilos de Resaltado y Marcadores de Selección TTS --- */
+.ocr-modal-pre {
+  --sel-mark: var(--primary);
+  --sel-mark-bg: rgba(5, 150, 105, 0.05);
+  --sel-word-active-bg: rgba(16, 185, 129, 0.25);
+  --sel-word-active-color: #047857;
 }
 
-.dark-mode .tts-word.reading-active {
-  background-color: rgba(52, 211, 153, 0.3); /* Lighter translucent emerald in dark mode */
-  color: #34d399; /* Emerald-400 for high readability in dark mode */
-  box-shadow: 0 1px 0 #34d399;
+.dark-mode .ocr-modal-pre {
+  --sel-mark: var(--primary);
+  --sel-mark-bg: rgba(16, 185, 129, 0.08);
+  --sel-word-active-bg: rgba(52, 211, 153, 0.3);
+  --sel-word-active-color: #34d399;
+}
+
+/* Sobreescritura de variables de selección por tema */
+.ocr-modal-pre.theme-cream {
+  --sel-mark: #5b4636;
+  --sel-mark-bg: rgba(91, 70, 54, 0.08);
+  --sel-word-active-bg: rgba(91, 70, 54, 0.25);
+  --sel-word-active-color: #3d2f24;
+}
+
+.ocr-modal-pre.theme-soft-dark {
+  --sel-mark: #3b82f6;
+  --sel-mark-bg: rgba(59, 130, 246, 0.12);
+  --sel-word-active-bg: rgba(59, 130, 246, 0.35);
+  --sel-word-active-color: #ffffff;
+}
+
+.ocr-modal-pre.theme-municipal-green {
+  --sel-mark: #065f46;
+  --sel-mark-bg: rgba(6, 95, 70, 0.08);
+  --sel-word-active-bg: rgba(6, 95, 70, 0.22);
+  --sel-word-active-color: #044e39;
+}
+
+.dark-mode .ocr-modal-pre.theme-municipal-green {
+  --sel-mark: #34d399;
+  --sel-mark-bg: rgba(52, 211, 153, 0.15);
+  --sel-word-active-bg: rgba(52, 211, 153, 0.35);
+  --sel-word-active-color: #ffffff;
+}
+
+.ocr-modal-pre.theme-sunny-yellow {
+  --sel-mark: #78350f;
+  --sel-mark-bg: rgba(120, 53, 15, 0.08);
+  --sel-word-active-bg: rgba(120, 53, 15, 0.22);
+  --sel-word-active-color: #5c260a;
+}
+
+.ocr-modal-pre.theme-high-contrast-dark {
+  --sel-mark: #ffff00;
+  --sel-mark-bg: rgba(255, 255, 0, 0.15);
+  --sel-word-active-bg: #ffff00;
+  --sel-word-active-color: #000000;
+}
+
+.ocr-modal-pre.theme-high-contrast-light {
+  --sel-mark: #000000;
+  --sel-mark-bg: rgba(0, 0, 0, 0.08);
+  --sel-word-active-bg: #000000;
+  --sel-word-active-color: #ffffff;
+}
+
+/* Re-estilizar palabra activa con variables semánticas */
+.tts-word.reading-active {
+  background-color: var(--sel-word-active-bg) !important;
+  color: var(--sel-word-active-color) !important;
+  font-weight: 600;
+  box-shadow: 0 1.5px 0 var(--sel-mark) !important;
+}
+
+/* Estilos de resaltado de área seleccionada */
+.tts-word.selection-highlight {
+  background-color: var(--sel-mark-bg) !important;
+  border-bottom: 1px dashed var(--sel-mark) !important;
+}
+
+/* Indicadores de inicio y fin de selección */
+.tts-word.selection-start::before {
+  content: "●";
+  color: var(--sel-mark) !important;
+  font-size: 8px !important;
+  margin-right: 4px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  vertical-align: middle !important;
+  background: var(--sel-mark-bg) !important;
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 50% !important;
+  border: 1px solid var(--sel-mark) !important;
+  line-height: 1 !important;
+  font-weight: bold !important;
+}
+
+.tts-word.selection-end::after {
+  content: "●";
+  color: var(--sel-mark) !important;
+  font-size: 8px !important;
+  margin-left: 4px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  vertical-align: middle !important;
+  background: var(--sel-mark-bg) !important;
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 50% !important;
+  border: 1px solid var(--sel-mark) !important;
+  line-height: 1 !important;
+  font-weight: bold !important;
 }
 
 

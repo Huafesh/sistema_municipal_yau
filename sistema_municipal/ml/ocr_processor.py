@@ -72,91 +72,137 @@ def preprocesar_imagen(ruta_imagen: str) -> np.ndarray:
     return limpia
 
 
-def procesar_imagen(ruta_imagen: str) -> str:
-    """
-    Extrae el texto completo de una imagen mediante OCR.
-
-    Flujo:
-        Imagen → Preprocesamiento → Tesseract OCR → Limpieza → Texto
-
-    Args:
-        ruta_imagen: Ruta del archivo de imagen (JPG, PNG, PDF convertido)
-
-    Returns:
-        Texto extraído como string limpio
-    """
+def procesar_imagen_generator(ruta_imagen: str):
+    """Generador que procesa una imagen y reporta el progreso de carga."""
     try:
-        # Verificar que el archivo existe
+        yield 15, "Verificando archivo de imagen..."
         if not os.path.exists(ruta_imagen):
-            return "Error: Archivo no encontrado."
+            yield 100, "Error: Archivo no encontrado."
+            return
 
-        # Preprocesar imagen
+        yield 35, "Preprocesando imagen con OpenCV (reducción de ruido y binarización)..."
         img_procesada = preprocesar_imagen(ruta_imagen)
 
-        # Configuración Tesseract:
-        #   --oem 3  → Modo LSTM (mejor precisión)
-        #   --psm 6  → Detectar bloque de texto uniforme
-        #   -l spa   → Idioma español
+        yield 60, "Analizando texto con Tesseract OCR..."
         config_tesseract = "--oem 3 --psm 6 -l spa"
-
-        # Extraer texto
         texto_raw = pytesseract.image_to_string(img_procesada, config=config_tesseract)
 
-        # Limpiar y normalizar texto
+        yield 85, "Limpiando y normalizando texto extraído..."
         texto_limpio = limpiar_texto(texto_raw)
 
         if not texto_limpio.strip():
-            return "No se pudo extraer texto legible del documento."
+            yield 100, "No se pudo extraer texto legible del documento."
+            return
 
-        return texto_limpio
+        yield 100, texto_limpio
 
     except pytesseract.TesseractNotFoundError:
-        return "Error: Tesseract no instalado. Ejecute: sudo apt install tesseract-ocr tesseract-ocr-spa"
+        yield 100, "Error: Tesseract no instalado."
     except Exception as e:
-        return f"Error en OCR: {str(e)}"
+        yield 100, f"Error en OCR: {str(e)}"
 
 
-def procesar_pdf(ruta_pdf: str) -> str:
-    """
-    Convierte PDF a imágenes y extrae texto con OCR.
+def procesar_imagen(ruta_imagen: str) -> str:
+    """Extrae el texto completo de una imagen mediante OCR (síncrono)."""
+    res = ""
+    for pct, val in procesar_imagen_generator(ruta_imagen):
+        if pct == 100:
+            res = val
+    return res
 
-    Args:
-        ruta_pdf: Ruta del archivo PDF
 
-    Returns:
-        Texto completo del PDF
-    """
+def procesar_pdf_generator(ruta_pdf: str):
+    """Generador que procesa un PDF en paralelo y reporta el progreso página a página."""
     try:
-        from pdf2image import convert_from_path
+        from pdf2image import convert_from_path, pdfinfo_from_path
+        from concurrent.futures import ThreadPoolExecutor
+        import multiprocessing
+        import concurrent.futures
         
         # Intentar usar la ruta local de Poppler si existe
         poppler_path = r"c:\Users\Huafesh\OneDrive\Desktop\sistema_municipal_yau\poppler-26.02.0\Library\bin"
+        
+        yield 5, "Analizando la estructura del archivo PDF..."
+        
+        info = {}
+        try:
+            if os.path.exists(poppler_path):
+                info = pdfinfo_from_path(ruta_pdf, poppler_path=poppler_path)
+            else:
+                info = pdfinfo_from_path(ruta_pdf)
+        except Exception as info_err:
+            print("Error obteniendo info de PDF:", info_err)
+            
+        total_paginas = info.get("Pages", 1)
+        max_paginas = 50
+        excede_limite = total_paginas > max_paginas
+        paginas_a_procesar = min(total_paginas, max_paginas)
+        
+        yield 15, f"Convirtiendo {paginas_a_procesar} páginas a imágenes digitales..."
+        
+        # Convertir las páginas del PDF
         if os.path.exists(poppler_path):
-            paginas = convert_from_path(ruta_pdf, dpi=300, poppler_path=poppler_path)
+            paginas = convert_from_path(ruta_pdf, dpi=200, poppler_path=poppler_path, last_page=paginas_a_procesar)
         else:
-            paginas = convert_from_path(ruta_pdf, dpi=300)
+            paginas = convert_from_path(ruta_pdf, dpi=200, last_page=paginas_a_procesar)
 
-        textos = []
-        for i, pagina in enumerate(paginas):
-            # Guardar página en archivo temporal compatible con cualquier SO
+        yield 30, f"Iniciando OCR en paralelo ({paginas_a_procesar} páginas)..."
+
+        # Función auxiliar para procesar una página individual
+        def procesar_pagina_individual(arg_tuple):
+            idx, pagina = arg_tuple
             with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
                 ruta_temp = tmp.name
 
             try:
                 pagina.save(ruta_temp, "JPEG")
                 texto_pagina = procesar_imagen(ruta_temp)
-                textos.append(f"--- Página {i+1} ---\n{texto_pagina}")
+                return idx, f"--- Página {idx+1} ---\n{texto_pagina}"
             finally:
-                # Limpiar temporal siempre, incluso si hay error
                 if os.path.exists(ruta_temp):
                     os.remove(ruta_temp)
 
-        return "\n\n".join(textos)
+        # Determinar número óptimo de hilos concurrentes
+        cpu_cores = multiprocessing.cpu_count() or 4
+        num_workers = min(paginas_a_procesar, cpu_cores)
+        
+        tareas = list(enumerate(paginas))
+        textos_ordenados = [None] * len(paginas)
+        paginas_completadas = 0
+        
+        # Ejecución paralela multihilo
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(procesar_pagina_individual, tarea): tarea[0] for tarea in tareas}
+            
+            for future in concurrent.futures.as_completed(futures):
+                idx, texto = future.result()
+                textos_ordenados[idx] = texto
+                paginas_completadas += 1
+                
+                # Escalar el progreso de 30% a 90%
+                pct = 30 + int((paginas_completadas / paginas_a_procesar) * 60)
+                yield pct, f"Ejecutando OCR: página {paginas_completadas} de {paginas_a_procesar}..."
+
+        yield 92, "Consolidando textos extraídos..."
+        resultado = "\n\n".join(textos_ordenados)
+        if excede_limite:
+            resultado += f"\n\n--- [NOTA DEL SISTEMA: El archivo original contiene {total_paginas} páginas. Para optimizar el rendimiento de la mesa de partes, se han procesado las primeras {max_paginas} páginas] ---"
+            
+        yield 100, resultado
 
     except ImportError:
-        return "Error: Instale pdf2image con: pip install pdf2image"
+        yield 100, "Error: Instale pdf2image con: pip install pdf2image"
     except Exception as e:
-        return f"Error al procesar PDF: {str(e)}"
+        yield 100, f"Error al procesar PDF: {str(e)}"
+
+
+def procesar_pdf(ruta_pdf: str) -> str:
+    """Convierte PDF a imágenes y extrae texto con OCR en paralelo (síncrono)."""
+    res = ""
+    for pct, val in procesar_pdf_generator(ruta_pdf):
+        if pct == 100:
+            res = val
+    return res
 
 
 def limpiar_texto(texto: str) -> str:
@@ -180,37 +226,47 @@ def limpiar_texto(texto: str) -> str:
     return texto.strip()
 
 
-def obtener_datos_ocr(ruta_imagen: str) -> dict:
-    """
-    Versión extendida: retorna texto + metadatos del OCR.
-
-    Returns:
-        Dict con: texto, confianza promedio, num_palabras
-    """
+def obtener_datos_ocr_generator(ruta_imagen: str):
+    """Generador que extrae texto + metadatos (confianza) del OCR y reporta progreso."""
     try:
+        yield 15, "Inicializando análisis avanzado OCR de la imagen..."
         img_procesada = preprocesar_imagen(ruta_imagen)
         config = "--oem 3 --psm 6 -l spa"
 
-        # Obtener datos detallados (incluye confianza por palabra)
+        yield 45, "Ejecutando Tesseract OCR (análisis de confianza por palabra)..."
         datos = pytesseract.image_to_data(
             img_procesada,
             config=config,
             output_type=pytesseract.Output.DICT
         )
 
-        # Calcular confianza promedio (ignorar -1)
+        yield 75, "Calculando niveles de confianza del texto..."
         confianzas = [int(c) for c in datos['conf'] if str(c) != '-1' and int(c) > 0]
         confianza_prom = sum(confianzas) / len(confianzas) if confianzas else 0
 
-        # Texto completo
         texto = ' '.join([t for t in datos['text'] if t.strip()])
         texto = limpiar_texto(texto)
 
-        return {
+        yield 100, {
             'texto': texto,
             'confianza_promedio': round(confianza_prom, 1),
             'num_palabras': len([t for t in datos['text'] if t.strip()]),
         }
     except Exception as e:
-        texto = procesar_imagen(ruta_imagen)
-        return {'texto': texto, 'confianza_promedio': 0, 'num_palabras': len(texto.split())}
+        # Fallback usando procesar_imagen
+        texto = ""
+        for pct, val in procesar_imagen_generator(ruta_imagen):
+            if pct == 100:
+                texto = val
+            else:
+                yield pct, val
+        yield 100, {'texto': texto, 'confianza_promedio': 0, 'num_palabras': len(texto.split())}
+
+
+def obtener_datos_ocr(ruta_imagen: str) -> dict:
+    """Extrae texto + metadatos del OCR (síncrono)."""
+    res = {}
+    for pct, val in obtener_datos_ocr_generator(ruta_imagen):
+        if pct == 100:
+            res = val
+    return res

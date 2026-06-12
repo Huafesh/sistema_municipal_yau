@@ -16,16 +16,45 @@ const CATEGORIAS = {
   'REGULAR': '#ea580c', 'NO APTO': '#e11d48',
 };
 
+// ── Analizador de Audio para Gradientes Reactivos ──
+let audioCtx = null;
+let analyser = null;
+
+function connectAudioAnalyser(audioElement) {
+  try {
+    if (!audioCtx) {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AudioContextClass();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 64;
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    if (!audioElement.srcNode) {
+      audioElement.srcNode = audioCtx.createMediaElementSource(audioElement);
+      audioElement.srcNode.connect(analyser);
+      analyser.connect(audioCtx.destination);
+    }
+  } catch (err) {
+    console.warn("[TTS] Error al conectar el analizador de audio:", err);
+  }
+}
+
 // ── TTS: Edge Premium vía API Flask ──────
 const TTS = {
   voz: 'femenina', // 'femenina' o 'masculina'
   activo: false,
+  pausado: false,  // Bandera: ¿está pausado?
   audioPlayer: null,
   boundaries: [],
   animationId: null,
   originalHTML: null, // Guardar HTML original para des-envolver spans al detener
   chunks: [],
   currentChunkIndex: 0,
+  modoLectura: 'todo', // 'todo', 'omitir-paginas', 'omitir-numeros'
+  readingModal: false, // Bandera: ¿estamos leyendo el texto completo del modal?
+  isSelectionReading: false, // Bandera: ¿estamos leyendo una selección?
 
   inicializar() {
     console.log("[TTS] Inicializado con Edge TTS vía Flask");
@@ -34,46 +63,172 @@ const TTS = {
   splitIntoChunks(text) {
     if (!text) return [];
     
-    // Separamos por párrafos (dos o más saltos de línea)
-    const paragraphs = text.split(/\n{2,}/);
+    const lines = text.split(/\r?\n/);
     const chunks = [];
     let cumulativeOffset = 0;
     
-    for (let para of paragraphs) {
-      const paraIndex = text.indexOf(para, cumulativeOffset);
-      const currentParaIndex = paraIndex !== -1 ? paraIndex : cumulativeOffset;
+    let currentChunkText = "";
+    let currentChunkStart = -1;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmedLine = line.trim();
+      const lineOffset = text.indexOf(line, cumulativeOffset);
+      const currentLineOffset = lineOffset !== -1 ? lineOffset : cumulativeOffset;
       
-      // Reemplazar saltos de línea individuales con espacios para no romper oraciones
-      // pero manteniendo la longitud exacta de la cadena reemplazando \r y \n con espacios
-      const cleanPara = para.replace(/\r/g, ' ').replace(/\n/g, ' ');
+      // Actualizar offset acumulado
+      cumulativeOffset = currentLineOffset + line.length;
       
-      // Dividir en oraciones usando puntos, signos de interrogación o exclamación
-      const sentenceRegex = /[^.!?]+[.!?]*/g;
-      let match;
-      while ((match = sentenceRegex.exec(cleanPara)) !== null) {
-        const sentenceText = match[0];
-        const trimmed = sentenceText.trim();
-        if (trimmed.length > 0) {
-          const trimStartOffset = sentenceText.length - sentenceText.trimStart().length;
-          const absOffset = currentParaIndex + match.index + trimStartOffset;
+      // 1. Manejo de líneas vacías (salto de párrafo)
+      if (trimmedLine.length === 0) {
+        if (currentChunkText.trim().length > 0) {
           chunks.push({
-            text: trimmed,
-            startOffset: absOffset
+            text: currentChunkText.trim(),
+            startOffset: currentChunkStart
           });
+          currentChunkText = "";
+          currentChunkStart = -1;
+        }
+        continue;
+      }
+      
+      // 2. Pre-filtrado del Modo: Omitir páginas (para evitar pausas en cortes de página)
+      if (this.modoLectura === 'omitir-paginas') {
+        const isPageDivider = /^p[áa]gina\s+\d+$/i.test(trimmedLine) || 
+                              /^---\s*p[áa]gina\s+\d+\s*---$/i.test(trimmedLine) ||
+                              (trimmedLine.toLowerCase().includes('página') && trimmedLine.length < 15);
+        if (isPageDivider) {
+          // Omitir por completo la línea de página, no corta el flujo de lectura
+          continue;
         }
       }
-      cumulativeOffset = currentParaIndex + para.length;
+      
+      let processedLine = trimmedLine;
+      // 3. Pre-filtrado del Modo: Omitir números y viñetas
+      if (this.modoLectura === 'omitir-numeros') {
+        processedLine = processedLine
+          // Numeración decimal simple o compuesta: "1.", "12.", "1.2.", "1.2.3." (con o sin espacio)
+          .replace(/^\s*\d+(\.\d+)*\.?\s*[-).:]?\s+/, '')
+          // Numeración con paréntesis: "1)", "12)", "(1)", "(12)" 
+          .replace(/^\s*\(?\d+\)?\s+/, '')
+          // Incisos con letra: "a.", "a)", "a-", "A.", "A)", con o sin espacio
+          .replace(/^\s*[a-zA-Z][.):\-]\s*/, '')
+          // Números romanos: "I.", "II.", "III.", "IV.", "IX.", "XI.", etc.
+          .replace(/^\s*(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})[.):\-]\s+/i, '')
+          // Viñetas y guiones de todo tipo: - * • · – — ▸ ▪ ◆ ➤ ✓ ✗
+          .replace(/^\s*[-*•·–—▸▪◆➤✓✗]\s+/, '')
+          // "Art. 5", "Artículo 3", "Inciso 2", "Numeral 4" al inicio
+          .replace(/^\s*(art\.?|artículo|inciso|numeral|sección|capítulo)\s+\d+[\s.:)]/i, '');
+      }
+      
+      if (processedLine.trim().length === 0) {
+        continue;
+      }
+      
+      if (currentChunkStart === -1) {
+        currentChunkStart = currentLineOffset + (line.length - line.trimStart().length);
+      }
+      
+      // Acumular el texto de la línea
+      if (currentChunkText.length > 0) {
+        currentChunkText += " " + processedLine;
+      } else {
+        currentChunkText = processedLine;
+      }
+      
+      // Detección inteligente para dividir en fragmentos lógicos:
+      // Queremos leer de corrido sin pausas molestas en cada línea del OCR.
+      // Solo dividiremos si:
+      // a) La línea termina en puntuación fuerte (. ! ?) y ya acumulamos un tamaño razonable (> 120 caracteres) para un fragmento.
+      // b) O es el fin del texto.
+      // c) O detectamos que la línea actual parece ser un título/encabezado corto independiente (y la siguiente línea empieza con mayúscula).
+      const endsWithPunct = /[.!?]$/.test(processedLine);
+      const nextLine = (i < lines.length - 1) ? lines[i + 1].trim() : "";
+      
+      let shouldSplit = false;
+      if (endsWithPunct && currentChunkText.length > 120) {
+        shouldSplit = true;
+      } else if (i === lines.length - 1) {
+        shouldSplit = true;
+      } else {
+        // Títulos o secciones independientes
+        const isTitleLike = processedLine.length < 50 && 
+                            (processedLine === processedLine.toUpperCase() || /^[A-Z0-9]/.test(processedLine)) &&
+                            nextLine && /^[A-Z0-9]/.test(nextLine);
+        if (isTitleLike && currentChunkText.length > 40) {
+          shouldSplit = true;
+        }
+      }
+      
+      if (shouldSplit) {
+        chunks.push({
+          text: currentChunkText.trim(),
+          startOffset: currentChunkStart
+        });
+        currentChunkText = "";
+        currentChunkStart = -1;
+      }
     }
+    
+    // Guardar remanente si lo hay
+    if (currentChunkText.trim().length > 0) {
+      chunks.push({
+        text: currentChunkText.trim(),
+        startOffset: currentChunkStart !== -1 ? currentChunkStart : cumulativeOffset
+      });
+    }
+    
     return chunks;
+  },
+
+  preloadNextChunk(nextIndex) {
+    // Limpiar pre-carga anterior
+    this.preloadedChunk = null;
+    
+    if (!this.chunks || nextIndex >= this.chunks.length) return;
+    
+    const nextText = this.chunks[nextIndex].text;
+    const currentVoice = this.voz;
+    
+    fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: nextText, voice: currentVoice })
+    })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then(data => {
+        if (data.error) throw new Error(data.error);
+        
+        // Crear objeto Audio y precargar los bytes
+        const audio = new Audio(data.url);
+        audio.load(); // Forzar al navegador a iniciar la descarga en segundo plano
+        
+        this.preloadedChunk = {
+          index: nextIndex,
+          text: nextText,
+          voice: currentVoice,
+          data: data,
+          audio: audio
+        };
+        console.log(`[TTS] Chunk ${nextIndex} pre-cargado con éxito.`);
+      })
+      .catch(err => {
+        console.warn(`[TTS] Error en pre-carga de chunk ${nextIndex}:`, err);
+      });
   },
 
   hablar(texto) {
     if (!texto?.trim()) return;
     this.detener(true); // Detener el audio previo pero mantener los spans y los chunks
 
-    // Si hay un modal de OCR abierto, preparar los spans para el resaltado
+    // Usar la bandera readingModal para saber si estamos en modo "Escuchar Todo"
+    // Esto evita comparar el texto del chunk con el DOM (que puede diferir si el modo
+    // de lectura modificó el texto, ej: omitir-numeros quita "1. " al inicio)
     const modalText = document.getElementById('ocr-modal-text');
-    const isModalText = modalText && (texto === modalText.textContent || modalText.textContent.includes(texto));
+    const isModalText = this.readingModal && modalText;
     
     if (isModalText) {
       if (!this.originalHTML) {
@@ -84,20 +239,32 @@ const TTS = {
       modalText.querySelectorAll('.tts-word.reading-active').forEach(s => {
         s.classList.remove('reading-active');
       });
-    } else {
-      // Si ya no estamos leyendo el texto del modal, restaurar el original y limpiar chunks
-      if (modalText && this.originalHTML) {
-        modalText.innerHTML = this.originalHTML;
-        this.originalHTML = null;
-      }
-      this.chunks = [];
-      this.currentChunkIndex = 0;
     }
 
     const labelPlayAll = document.getElementById('label-play-all');
-    if (labelPlayAll) labelPlayAll.textContent = 'Cargando...';
-
     const btnPlayAll = document.getElementById('btn-play-all');
+
+    // 1. Verificar si el fragmento ya está pre-cargado
+    const isPreloaded = this.preloadedChunk && 
+                        this.preloadedChunk.index === this.currentChunkIndex &&
+                        this.preloadedChunk.text === texto &&
+                        this.preloadedChunk.voice === this.voz;
+
+    if (isPreloaded) {
+      console.log(`[TTS] Reproduciendo chunk pre-cargado ${this.currentChunkIndex}`);
+      const preloaded = this.preloadedChunk;
+      this.preloadedChunk = null; // consumido
+      
+      this.boundaries = preloaded.data.boundaries;
+      this.activo = true;
+      this.audioPlayer = preloaded.audio;
+      
+      this.playAudioAndRegisterEvents(isModalText, modalText, texto);
+      return;
+    }
+
+    // 2. Fallback: No estaba pre-cargado, hacer fetch normal
+    if (labelPlayAll) labelPlayAll.textContent = 'Cargando...';
     if (btnPlayAll) btnPlayAll.disabled = true;
 
     fetch('/api/tts', {
@@ -117,47 +284,230 @@ const TTS = {
 
         if (btnPlayAll) btnPlayAll.disabled = false;
 
-        // Alinear límites con los spans del DOM
-        if (isModalText) {
-          const spans = modalText.querySelectorAll('.tts-word');
-          
-          let startOffset = 0;
-          if (this.chunks && this.chunks[this.currentChunkIndex]) {
-            startOffset = this.chunks[this.currentChunkIndex].startOffset;
-          } else {
-            const selectionOffset = modalText.textContent.indexOf(texto);
-            startOffset = selectionOffset !== -1 ? selectionOffset : 0;
-          }
-          
-          let currentSpanIndex = 0;
-          while (currentSpanIndex < spans.length) {
-            const start = parseInt(spans[currentSpanIndex].dataset.start);
-            if (start >= startOffset) {
-              break;
-            }
-            currentSpanIndex++;
-          }
-
-          for (let boundary of this.boundaries) {
-            while (currentSpanIndex < spans.length) {
-              const spanText = spans[currentSpanIndex].textContent.toLowerCase().replace(/[^a-z0-9áéíóúñü]/g, '');
-              const boundaryText = boundary.word.toLowerCase().replace(/[^a-z0-9áéíóúñü]/g, '');
-              if (spanText === boundaryText || spanText.includes(boundaryText) || boundaryText.includes(spanText)) {
-                boundary.span = spans[currentSpanIndex];
-                currentSpanIndex++;
-                break;
-              }
-              currentSpanIndex++;
-            }
-          }
-        }
-
         this.audioPlayer = new Audio(data.url);
-        this.audioPlayer.play();
+        this.playAudioAndRegisterEvents(isModalText, modalText, texto);
+      })
+      .catch(err => {
+        console.error("[TTS] Error en Edge TTS:", err);
+        this.detener();
+        if (btnPlayAll) btnPlayAll.disabled = false;
+        mostrarAlertaPersonalizada("Ocurrió un error al cargar la voz del servidor.", "Error de Lector");
+      });
+  },
 
+  playAudioAndRegisterEvents(isModalText, modalText, texto) {
+    const btnPlayAll = document.getElementById('btn-play-all');
+    if (btnPlayAll) btnPlayAll.disabled = false;
+
+    // Alinear límites con los spans del DOM
+    if (isModalText) {
+      const spans = modalText.querySelectorAll('.tts-word');
+      
+      let startOffset = 0;
+      if (this.chunks && this.chunks[this.currentChunkIndex]) {
+        startOffset = this.chunks[this.currentChunkIndex].startOffset;
+      } else {
+        const selectionOffset = modalText.textContent.indexOf(texto);
+        startOffset = selectionOffset !== -1 ? selectionOffset : 0;
+      }
+      
+      let currentSpanIndex = 0;
+      while (currentSpanIndex < spans.length) {
+        const start = parseInt(spans[currentSpanIndex].dataset.start);
+        if (start >= startOffset) {
+          break;
+        }
+        currentSpanIndex++;
+      }
+
+      // Si es lectura de selección, resaltar el bloque e identificar extremos
+      if (this.isSelectionReading) {
+        const endOffset = startOffset + texto.length;
+        let firstSelSpan = null;
+        let lastSelSpan = null;
+        
+        spans.forEach(span => {
+          const spanStart = parseInt(span.dataset.start);
+          const spanEnd = parseInt(span.dataset.end);
+          if (spanStart >= startOffset && spanEnd <= endOffset) {
+            span.classList.add('selection-highlight');
+            if (!firstSelSpan) firstSelSpan = span;
+            lastSelSpan = span;
+          }
+        });
+        
+        if (firstSelSpan) firstSelSpan.classList.add('selection-start');
+        if (lastSelSpan) lastSelSpan.classList.add('selection-end');
+      }
+
+      for (let boundary of this.boundaries) {
+        while (currentSpanIndex < spans.length) {
+          const spanText = spans[currentSpanIndex].textContent.toLowerCase().replace(/[^a-z0-9áéíóúñü]/g, '');
+          const boundaryText = boundary.word.toLowerCase().replace(/[^a-z0-9áéíóúñü]/g, '');
+          if (spanText === boundaryText || spanText.includes(boundaryText) || boundaryText.includes(spanText)) {
+            boundary.span = spans[currentSpanIndex];
+            currentSpanIndex++;
+            break;
+          }
+          currentSpanIndex++;
+        }
+      }
+    }
+
+    // Activar clase de animación de bordes en el visualizador
+    if (modalText) {
+      modalText.classList.add('tts-active');
+    }
+
+    // Conectar analizador de audio
+    connectAudioAnalyser(this.audioPlayer);
+
+    // Reproducir
+    this.audioPlayer.play().catch(err => {
+      console.error("[TTS] Error al iniciar reproducción:", err);
+    });
+
+    const syncHighlight = () => {
+      if (!this.activo || !this.audioPlayer) return;
+      const currentTime = this.audioPlayer.currentTime;
+
+      // Calcular volumen en tiempo real y actualizar CSS custom property
+      if (analyser) {
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const avg = dataArray.length > 0 ? (sum / dataArray.length) : 0;
+        // Normalizar volumen para una reacción óptima
+        const normalizedVolume = Math.min(avg / 90, 1.0);
+        if (modalText) {
+          modalText.style.setProperty('--voice-vol', normalizedVolume.toFixed(3));
+        }
+      }
+
+      const activeBoundary = this.boundaries.find(b => currentTime >= b.start && currentTime <= b.end);
+      if (activeBoundary && activeBoundary.span) {
+        if (!activeBoundary.span.classList.contains('reading-active')) {
+          modalText.querySelectorAll('.tts-word.reading-active').forEach(s => {
+            s.classList.remove('reading-active');
+          });
+          activeBoundary.span.classList.add('reading-active');
+          activeBoundary.span.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }
+      this.animationId = requestAnimationFrame(syncHighlight);
+    };
+
+    if (isModalText) {
+      this.animationId = requestAnimationFrame(syncHighlight);
+    }
+
+    this.audioPlayer.onended = () => {
+      if (this.chunks && this.chunks.length > 0 && this.currentChunkIndex < this.chunks.length - 1) {
+        this.currentChunkIndex++;
+        this.hablar(this.chunks[this.currentChunkIndex].text);
+      } else {
+        this.detener();
+      }
+    };
+
+    if (typeof actualizarInterfazTTS === 'function') {
+      actualizarInterfazTTS(true);
+    }
+
+    // Pre-cargar proactivamente el siguiente fragmento
+    if (this.chunks && this.chunks.length > 0 && this.currentChunkIndex < this.chunks.length - 1) {
+      this.preloadNextChunk(this.currentChunkIndex + 1);
+    }
+  },
+
+  detener(keepSpans = false) {
+    this.activo = false;
+    this.pausado = false; // ← Siempre limpiar la pausa al detener
+    if (this.audioPlayer) {
+      try {
+        if (!this.audioPlayer.ended) {
+          this.audioPlayer.pause();
+        }
+      } catch (_) {}
+      this.audioPlayer = null;
+    }
+    if (this.animationId) {
+      cancelAnimationFrame(this.animationId);
+      this.animationId = null;
+    }
+    this.boundaries = [];
+    
+    const modalText = document.getElementById('ocr-modal-text');
+    if (modalText) {
+      modalText.style.setProperty('--voice-vol', '0');
+      if (!keepSpans) {
+        modalText.classList.remove('tts-active');
+      }
+    }
+    
+    if (!keepSpans) {
+      if (modalText && this.originalHTML) {
+        modalText.innerHTML = this.originalHTML;
+        this.originalHTML = null;
+      } else {
+        // Limpieza de respaldo
+        document.querySelectorAll('.tts-word.reading-active, .tts-word.selection-highlight, .tts-word.selection-start, .tts-word.selection-end').forEach(s => {
+          s.classList.remove('reading-active', 'selection-highlight', 'selection-start', 'selection-end');
+        });
+      }
+      this.chunks = [];
+      this.currentChunkIndex = 0;
+      this.preloadedChunk = null;
+      this.readingModal = false; // ← Limpiar la bandera al detener completamente
+      this.isSelectionReading = false; // ← Resetear la bandera de selección
+
+      const btnPlayAll = document.getElementById('btn-play-all');
+      if (btnPlayAll) btnPlayAll.disabled = false;
+
+      if (typeof actualizarInterfazTTS === 'function') {
+        actualizarInterfazTTS(false);
+      }
+    }
+  },
+
+  pausarReanudar() {
+    if (!this.activo || !this.audioPlayer) return;
+
+    if (this.pausado) {
+      // Reanudar
+      this.audioPlayer.play().catch(err => {
+        console.error('[TTS] Error al reanudar:', err);
+      });
+      // Asegurar reanudación de AudioContext
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      // Reiniciar la animación de resaltado
+      const modalText = document.getElementById('ocr-modal-text');
+      if (modalText) {
+        modalText.classList.add('tts-active');
+      }
+      if (this.readingModal && modalText) {
         const syncHighlight = () => {
-          if (!this.activo || !this.audioPlayer) return;
+          if (!this.activo || !this.audioPlayer || this.pausado) return;
           const currentTime = this.audioPlayer.currentTime;
+
+          // Calcular volumen en tiempo real y actualizar CSS custom property
+          if (analyser) {
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+              sum += dataArray[i];
+            }
+            const avg = dataArray.length > 0 ? (sum / dataArray.length) : 0;
+            const normalizedVolume = Math.min(avg / 90, 1.0);
+            modalText.style.setProperty('--voice-vol', normalizedVolume.toFixed(3));
+          }
+
           const activeBoundary = this.boundaries.find(b => currentTime >= b.start && currentTime <= b.end);
           if (activeBoundary && activeBoundary.span) {
             if (!activeBoundary.span.classList.contains('reading-active')) {
@@ -170,64 +520,25 @@ const TTS = {
           }
           this.animationId = requestAnimationFrame(syncHighlight);
         };
-
-        if (isModalText) {
-          this.animationId = requestAnimationFrame(syncHighlight);
-        }
-
-        this.audioPlayer.onended = () => {
-          if (this.chunks && this.chunks.length > 0 && this.currentChunkIndex < this.chunks.length - 1) {
-            this.currentChunkIndex++;
-            this.hablar(this.chunks[this.currentChunkIndex].text);
-          } else {
-            this.detener();
-          }
-        };
-
-        if (typeof actualizarInterfazTTS === 'function') {
-          actualizarInterfazTTS(true);
-        }
-      })
-      .catch(err => {
-        console.error("[TTS] Error en Edge TTS:", err);
-        this.detener();
-        if (btnPlayAll) btnPlayAll.disabled = false;
-        mostrarAlertaPersonalizada("Ocurrió un error al cargar la voz del servidor.", "Error de Lector");
-      });
-  },
-
-  detener(keepSpans = false) {
-    this.activo = false;
-    if (this.audioPlayer) {
-      try { this.audioPlayer.pause(); } catch (_) {}
-      this.audioPlayer = null;
-    }
-    if (this.animationId) {
-      cancelAnimationFrame(this.animationId);
-      this.animationId = null;
-    }
-    this.boundaries = [];
-    
-    if (!keepSpans) {
+        this.animationId = requestAnimationFrame(syncHighlight);
+      }
+      this.pausado = false;
+    } else {
+      // Pausar
+      this.audioPlayer.pause();
+      if (this.animationId) {
+        cancelAnimationFrame(this.animationId);
+        this.animationId = null;
+      }
       const modalText = document.getElementById('ocr-modal-text');
-      if (modalText && this.originalHTML) {
-        modalText.innerHTML = this.originalHTML;
-        this.originalHTML = null;
-      } else {
-        // Limpieza de respaldo
-        document.querySelectorAll('.tts-word.reading-active').forEach(s => {
-          s.classList.remove('reading-active');
-        });
+      if (modalText) {
+        modalText.style.setProperty('--voice-vol', '0');
       }
-      this.chunks = [];
-      this.currentChunkIndex = 0;
+      this.pausado = true;
+    }
 
-      const btnPlayAll = document.getElementById('btn-play-all');
-      if (btnPlayAll) btnPlayAll.disabled = false;
-
-      if (typeof actualizarInterfazTTS === 'function') {
-        actualizarInterfazTTS(false);
-      }
+    if (typeof actualizarInterfazTTS === 'function') {
+      actualizarInterfazTTS(true);
     }
   }
 };
@@ -238,6 +549,29 @@ TTS.inicializar();
 // Estado local
 let colaTramites = [];
 let rankingCVs   = [];
+let colaVisibleLimit = 15;
+let rankingVisibleLimit = 15;
+
+// Configuración de observador para Infinite Scroll
+function setupIntersectionObserver(elementId, callback) {
+  const element = document.getElementById(elementId);
+  if (!element) return;
+  
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        observer.unobserve(element);
+        callback();
+      }
+    });
+  }, {
+    root: null,
+    rootMargin: '0px 0px 150px 0px', // Activar carga antes de llegar al borde
+    threshold: 0.1
+  });
+  
+  observer.observe(element);
+}
 
 // Fecha y hora actual en tiempo real
 function actualizarReloj() {
@@ -425,41 +759,84 @@ async function procesarArchivoDirecto(file, tipo) {
   const spinner  = document.getElementById('spinner-' + tipo);
   const uploadUI = document.getElementById('upload-ui-' + tipo);
   const stepEl   = document.getElementById('step-' + tipo);
+  const pctEl    = document.getElementById('loading-pct-' + tipo);
+  const fillEl   = spinner.querySelector('.progress-fill');
 
-  // Mostrar spinner
+  // Guardar el nombre del archivo en el contenedor OCR correspondiente para el modal
+  const ocrBox = document.getElementById(`ocr-${tipo}-box`);
+  if (ocrBox) {
+    ocrBox.dataset.filename = file.name;
+  }
+
+  // Mostrar spinner y restablecer barras de progreso
   spinner.classList.add('visible');
   uploadUI.style.display = 'none';
+  if (pctEl) pctEl.textContent = '0%';
+  if (fillEl) fillEl.style.width = '0%';
 
   const formData = new FormData();
   formData.append('archivo', file);
 
+  if (tipo !== 'tramite') {
+    const puesto = document.getElementById('nombre-puesto').value || 'Puesto Municipal';
+    formData.append('puesto', puesto);
+  }
+
   try {
-    if (tipo === 'tramite') {
-      stepEl.textContent = '🔍 Leyendo texto con Tesseract OCR...';
-      await delay(600);
-      stepEl.textContent = '🤖 Clasificando trámite y prioridad...';
+    const url = tipo === 'tramite' ? '/api/tramite/procesar' : '/api/cv/evaluar';
+    const response = await fetch(url, { method: 'POST', body: formData });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
 
-      const res  = await fetch('/api/tramite/procesar', { method:'POST', body:formData });
-      const data = await res.json();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let dataFinal = null;
 
-      stepEl.textContent = '✅ Completado.';
-      await delay(300);
-      mostrarResultadoTramite(data);
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
 
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE separa eventos por doble salto de línea
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop(); // Mantener el último fragmento incompleto
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (line.startsWith('data:')) {
+          try {
+            const data = JSON.parse(line.substring(5).trim());
+            
+            // Actualizar porcentaje e interfaz
+            if (data.progress !== undefined) {
+              if (pctEl) pctEl.textContent = `${data.progress}%`;
+              if (fillEl) fillEl.style.width = `${data.progress}%`;
+            }
+            if (data.message) {
+              stepEl.textContent = data.message;
+            }
+            if (data.result) {
+              dataFinal = data.result;
+            }
+          } catch (e) {
+            console.error('Error al procesar evento SSE:', e, line);
+          }
+        }
+      }
+    }
+
+    if (dataFinal) {
+      if (tipo === 'tramite') {
+        mostrarResultadoTramite(dataFinal);
+      } else {
+        mostrarResultadoCV(dataFinal);
+      }
     } else {
-      const puesto = document.getElementById('nombre-puesto').value || 'Puesto Municipal';
-      formData.append('puesto', puesto);
-
-      stepEl.textContent = '🔍 Digitalizando CV...';
-      await delay(600);
-      stepEl.textContent = '🤖 Evaluando aptitudes y competencias...';
-
-      const res  = await fetch('/api/cv/evaluar', { method:'POST', body:formData });
-      const data = await res.json();
-
-      stepEl.textContent = '✅ Análisis finalizado.';
-      await delay(300);
-      mostrarResultadoCV(data);
+      throw new Error("No se recibieron resultados válidos del servidor.");
     }
   } catch (err) {
     mostrarAlertaPersonalizada('Error al procesar: ' + err.message, 'Error de Procesamiento');
@@ -623,7 +1000,10 @@ function mostrarResultadoCV(data) {
 }
 
 // ── Render COLA ────────────────────────────────────────────
-function renderCola() {
+function renderCola(resetLimit = true) {
+  if (resetLimit) {
+    colaVisibleLimit = 15;
+  }
   const cont = document.getElementById('cola-list');
   document.getElementById('cnt-critico').textContent = colaTramites.filter(t=>t.prioridad==='CRÍTICO').length;
   document.getElementById('cnt-alto').textContent    = colaTramites.filter(t=>t.prioridad==='ALTO').length;
@@ -646,10 +1026,19 @@ function renderCola() {
   }
 
   let html = '';
-  ['CRÍTICO','ALTO','MEDIO','BAJO'].forEach(nivel => {
-    const grupo = colaTramites.filter(t=>t.prioridad===nivel);
-    if (!grupo.length) return;
+  let itemsRendered = 0;
+  const totalItems = colaTramites.length;
+  const niveles = ['CRÍTICO', 'ALTO', 'MEDIO', 'BAJO'];
+
+  for (const nivel of niveles) {
+    const grupo = colaTramites.filter(t => t.prioridad === nivel);
+    if (!grupo.length) continue;
+    if (itemsRendered >= colaVisibleLimit) break;
+
     const p = PRIORIDADES[nivel];
+    const remainingLimit = colaVisibleLimit - itemsRendered;
+    const itemsToRender = grupo.slice(0, remainingLimit);
+
     html += `<div class="queue-group"><div class="group-header">
       <span class="badge ${p.cls}">
         <span class="badge-dot"></span>
@@ -657,7 +1046,8 @@ function renderCola() {
       </span>
       <span class="group-count">— ${grupo.length} trámite${grupo.length!==1?'s':''}</span>
       <div class="group-line"></div></div>`;
-    grupo.forEach(t => {
+      
+    itemsToRender.forEach(t => {
       const pos = colaTramites.indexOf(t) + 1;
       html += `<div class="q-row" style="border-left-color:${p.color}">
         <div class="q-pos" style="background:${p.bg};color:${p.color};border:1px solid ${p.br}">${pos}</div>
@@ -672,13 +1062,44 @@ function renderCola() {
         </div>
       </div>`;
     });
+    
     html += '</div>';
-  });
+    itemsRendered += itemsToRender.length;
+  }
+
   cont.innerHTML = html;
+
+  if (itemsRendered < totalItems) {
+    const sentinelHtml = `
+      <div class="sentinel-spinner" id="cola-sentinel" style="display: flex; justify-content: center; align-items: center; padding: 24px; gap: 10px; color: var(--primary); font-family: inherit;">
+        <svg class="spin-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation: spin 1s linear infinite;">
+          <line x1="12" y1="2" x2="12" y2="6"/>
+          <line x1="12" y1="18" x2="12" y2="22"/>
+          <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
+          <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+          <line x1="2" y1="12" x2="6" y2="12"/>
+          <line x1="18" y1="12" x2="22" y2="12"/>
+          <line x1="6.34" y1="17.66" x2="9.17" y2="14.83"/>
+          <line x1="14.83" y1="9.17" x2="17.66" y2="6.34"/>
+        </svg>
+        <span style="font-size: 13px; font-weight: 600;">Cargando más trámites...</span>
+      </div>
+    `;
+    cont.insertAdjacentHTML('beforeend', sentinelHtml);
+    setupIntersectionObserver('cola-sentinel', () => {
+      setTimeout(() => {
+        colaVisibleLimit += 15;
+        renderCola(false);
+      }, 300);
+    });
+  }
 }
 
 // ── Render RANKING ─────────────────────────────────────────
-function renderRanking() {
+function renderRanking(resetLimit = true) {
+  if (resetLimit) {
+    rankingVisibleLimit = 15;
+  }
   const cont = document.getElementById('ranking-list');
   if (!rankingCVs.length) {
     cont.innerHTML = `
@@ -693,8 +1114,12 @@ function renderRanking() {
       </div>`;
     return;
   }
+
   let html = '<div style="display:flex;flex-direction:column;gap:12px">';
-  rankingCVs.forEach((cv, i) => {
+  const totalItems = rankingCVs.length;
+  const itemsToRender = rankingCVs.slice(0, rankingVisibleLimit);
+
+  itemsToRender.forEach((cv, i) => {
     const col = CATEGORIAS[cv.categoria] || '#374151';
     html += `<div class="card" style="border-left: 4px solid ${col}">
       <div style="padding: 16px 24px; display:flex; align-items:center; gap:20px">
@@ -712,6 +1137,31 @@ function renderRanking() {
   });
   html += '</div>';
   cont.innerHTML = html;
+
+  if (itemsToRender.length < totalItems) {
+    const sentinelHtml = `
+      <div class="sentinel-spinner" id="ranking-sentinel" style="display: flex; justify-content: center; align-items: center; padding: 24px; gap: 10px; color: var(--primary); font-family: inherit;">
+        <svg class="spin-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation: spin 1s linear infinite;">
+          <line x1="12" y1="2" x2="12" y2="6"/>
+          <line x1="12" y1="18" x2="12" y2="22"/>
+          <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
+          <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+          <line x1="2" y1="12" x2="6" y2="12"/>
+          <line x1="18" y1="12" x2="22" y2="12"/>
+          <line x1="6.34" y1="17.66" x2="9.17" y2="14.83"/>
+          <line x1="14.83" y1="9.17" x2="17.66" y2="6.34"/>
+        </svg>
+        <span style="font-size: 13px; font-weight: 600;">Cargando más candidatos...</span>
+      </div>
+    `;
+    cont.insertAdjacentHTML('beforeend', sentinelHtml);
+    setupIntersectionObserver('ranking-sentinel', () => {
+      setTimeout(() => {
+        rankingVisibleLimit += 15;
+        renderRanking(false);
+      }, 300);
+    });
+  }
 }
 
 // ── Limpiar formularios ────────────────────────────────────
@@ -756,9 +1206,18 @@ function abrirModalOCR(tipo) {
   const sourceText = document.getElementById(`ocr-${tipo}-text`);
   const modalText = document.getElementById('ocr-modal-text');
   const modal = document.getElementById('ocr-modal');
+  const ocrBox = document.getElementById(`ocr-${tipo}-box`);
   
   if (sourceText && modalText && modal) {
     modalText.innerHTML = sourceText.innerHTML;
+    
+    // Obtener el nombre del archivo guardado
+    const filename = ocrBox ? ocrBox.dataset.filename : '';
+    const titleSpan = document.querySelector('.ocr-modal-title span');
+    if (titleSpan) {
+      titleSpan.textContent = filename ? `Visualizador OCR · ${filename}` : 'Visualizador de Documento OCR';
+    }
+
     modal.classList.add('active');
     document.body.style.overflow = 'hidden';
   }
@@ -772,6 +1231,13 @@ function cerrarModalOCR() {
     document.body.style.overflow = '';
     // Detener la reproducción de voz al cerrar
     TTS.detener();
+    
+    // Restablecer el título del modal
+    const titleSpan = document.querySelector('.ocr-modal-title span');
+    if (titleSpan) {
+      titleSpan.textContent = 'Visualizador de Documento OCR';
+    }
+
     // Esperar a que termine la animación para vaciar el texto
     setTimeout(() => {
       if (modalText) modalText.innerHTML = '';
@@ -801,17 +1267,74 @@ function ajustarTamanoLetra(tamano) {
 }
 
 // ── CONTROLES DE ACCESIBILIDAD Y DROPDOWNS PERSONALIZADOS ─
+
+// Helper: limpiar estilos de posicionamiento fijo de un menú dropdown
+function _resetDropdownMenuStyle(menu) {
+  if (!menu) return;
+  menu.style.position = '';
+  menu.style.top      = '';
+  menu.style.left     = '';
+  menu.style.right    = '';
+  menu.style.width    = '';
+  menu.style.zIndex   = '';
+  menu.style.maxHeight = '';
+  menu.style.overflowY = '';
+}
+
+// Helper: aplicar posicionamiento fijo en móvil para escapar del overflow:hidden del modal
+function _positionDropdownFixed(dropdown) {
+  if (window.innerWidth > 768) return; // Solo en móvil/tablet
+  const trigger = dropdown.querySelector('.dropdown-trigger');
+  const menu    = dropdown.querySelector('.dropdown-menu');
+  if (!trigger || !menu) return;
+
+  const rect       = trigger.getBoundingClientRect();
+  const menuWidth  = Math.max(rect.width, 190);
+  const spaceBelow = window.innerHeight - rect.bottom - 10;
+  const spaceAbove = rect.top - 10;
+
+  // Altura máxima compacta: 180px para no tapar el contenido debajo
+  const MAX_HEIGHT = 180;
+  menu.style.position       = 'fixed';
+  menu.style.zIndex         = '99999';
+  menu.style.width          = menuWidth + 'px';
+  menu.style.overflowY      = 'auto';
+  menu.style.overscrollBehavior = 'contain';
+
+  // Preferir abrir hacia ABAJO; solo abrir hacia arriba si hay menos de 90px abajo
+  if (spaceBelow >= 90) {
+    menu.style.top    = (rect.bottom + 4) + 'px';
+    menu.style.bottom = 'auto';
+    menu.style.maxHeight = Math.min(MAX_HEIGHT, spaceBelow - 4) + 'px';
+  } else {
+    menu.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+    menu.style.top    = 'auto';
+    menu.style.maxHeight = Math.min(MAX_HEIGHT, spaceAbove - 4) + 'px';
+  }
+
+  // Alinear horizontalmente: evitar salir por la derecha
+  let leftPos = rect.left;
+  if (leftPos + menuWidth > window.innerWidth - 8) {
+    leftPos = window.innerWidth - menuWidth - 8;
+  }
+  menu.style.left  = Math.max(8, leftPos) + 'px';
+  menu.style.right = 'auto';
+}
+
 function toggleCustomDropdown(dropdownId) {
-  // Cerrar otros dropdowns primero
-  document.querySelectorAll('.custom-dropdown').forEach(dropdown => {
-    if (dropdown.id !== dropdownId) {
-      dropdown.classList.remove('active');
-    }
+  const dropdown  = document.getElementById(dropdownId);
+  const wasActive = dropdown?.classList.contains('active');
+
+  // Cerrar todos los dropdowns y limpiar sus estilos
+  document.querySelectorAll('.custom-dropdown').forEach(d => {
+    d.classList.remove('active');
+    _resetDropdownMenuStyle(d.querySelector('.dropdown-menu'));
   });
 
-  const dropdown = document.getElementById(dropdownId);
-  if (dropdown) {
-    dropdown.classList.toggle('active');
+  // Si no estaba activo, abrirlo
+  if (dropdown && !wasActive) {
+    dropdown.classList.add('active');
+    _positionDropdownFixed(dropdown);
   }
 }
 
@@ -833,8 +1356,9 @@ function selectDropdownOption(dropdownId, value, labelText, callback) {
     }
   });
 
-  // Cerrar el dropdown
+  // Cerrar el dropdown y limpiar estilos de posicionamiento
   dropdown.classList.remove('active');
+  _resetDropdownMenuStyle(dropdown.querySelector('.dropdown-menu'));
 
   // Disparar el callback de cambio
   if (callback && typeof callback === 'function') {
@@ -845,14 +1369,14 @@ function selectDropdownOption(dropdownId, value, labelText, callback) {
 function ajustarFuente(fuente) {
   const modalText = document.getElementById('ocr-modal-text');
   if (!modalText) return;
-  modalText.classList.remove('font-monospace', 'font-sans-serif', 'font-serif', 'font-dyslexic');
+  modalText.classList.remove('font-monospace', 'font-sans-serif', 'font-serif', 'font-dyslexic', 'font-atkinson', 'font-lexend', 'font-roboto-slab');
   modalText.classList.add(`font-${fuente}`);
 }
 
 function ajustarContraste(tema) {
   const modalText = document.getElementById('ocr-modal-text');
   if (!modalText) return;
-  modalText.classList.remove('theme-default', 'theme-high-contrast-dark', 'theme-high-contrast-light', 'theme-cream');
+  modalText.classList.remove('theme-default', 'theme-high-contrast-dark', 'theme-high-contrast-light', 'theme-cream', 'theme-soft-dark', 'theme-municipal-green', 'theme-sunny-yellow');
   modalText.classList.add(`theme-${tema}`);
 }
 
@@ -863,6 +1387,15 @@ function ajustarContraste(tema) {
 function cambiarVozTTS(tipo) {
   TTS.voz = tipo; // 'femenina' o 'masculina'
   console.log(`[TTS] Cambiado a voz: ${TTS.voz}`);
+  if (TTS.activo && TTS.chunks && TTS.chunks[TTS.currentChunkIndex]) {
+    // Continuar leyendo desde el mismo fragmento actual pero con la nueva voz
+    TTS.hablar(TTS.chunks[TTS.currentChunkIndex].text);
+  }
+}
+
+function cambiarModoLecturaTTS(modo) {
+  TTS.modoLectura = modo;
+  console.log(`[TTS] Modo de lectura cambiado a: ${TTS.modoLectura}`);
   if (TTS.activo) {
     TTS.detener();
     setTimeout(() => toggleLeerTodo(), 150);
@@ -927,6 +1460,8 @@ function toggleLeerTodo() {
 
   TTS.chunks = TTS.splitIntoChunks(texto);
   TTS.currentChunkIndex = 0;
+  TTS.readingModal = true; // ← Activar bandera: estamos leyendo el modal completo
+  TTS.isSelectionReading = false; // ← No es lectura por selección
 
   if (TTS.chunks.length > 0) {
     TTS.hablar(TTS.chunks[0].text);
@@ -946,6 +1481,8 @@ function leerTextoTTS(modo) {
     return;
   }
   TTS.detener();
+  TTS.readingModal = true; // Activar modo modal para habilitar el resaltado de palabras en tiempo real
+  TTS.isSelectionReading = true; // Activar bandera de lectura por selección
   const modalText = document.getElementById('ocr-modal-text');
   if (modalText) {
     TTS.chunks = [{ text: textoALeer, startOffset: modalText.textContent.indexOf(textoALeer) }];
@@ -955,6 +1492,10 @@ function leerTextoTTS(modo) {
 }
 
 // ── Detener síntesis ───────────────────────────────────────────
+function pausarReanudarTTS() {
+  TTS.pausarReanudar();
+}
+
 function detenerTTS() {
   TTS.detener();
 }
@@ -992,6 +1533,11 @@ function actualizarInterfazTTS(hablando) {
   const btnPrev      = document.getElementById('btn-prev-tts');
   const btnNext      = document.getElementById('btn-next-tts');
   
+  const btnPause     = document.getElementById('btn-pause-tts');
+  const svgPause     = document.getElementById('svg-pause');
+  const svgResume    = document.getElementById('svg-resume');
+  const labelPause   = document.getElementById('label-pause-tts');
+  
   const hasMultipleChunks = TTS.chunks && TTS.chunks.length > 1;
 
   if (hablando) {
@@ -1000,12 +1546,27 @@ function actualizarInterfazTTS(hablando) {
     if (svgStop)      svgStop.style.display    = 'inline-block';
     if (btnPrev)      btnPrev.style.display    = hasMultipleChunks ? 'inline-flex' : 'none';
     if (btnNext)      btnNext.style.display    = hasMultipleChunks ? 'inline-flex' : 'none';
+    
+    // Controles de Pausa
+    if (btnPause)     btnPause.style.display   = 'inline-flex';
+    if (TTS.pausado) {
+      if (svgPause)   svgPause.style.display   = 'none';
+      if (svgResume)  svgResume.style.display  = 'inline-block';
+      if (labelPause) labelPause.textContent   = 'Reanudar';
+    } else {
+      if (svgPause)   svgPause.style.display   = 'inline-block';
+      if (svgResume)  svgResume.style.display  = 'none';
+      if (labelPause) labelPause.textContent   = 'Pausar';
+    }
   } else {
     if (labelPlayAll) labelPlayAll.textContent = 'Escuchar Todo';
     if (svgPlay)      svgPlay.style.display    = 'inline-block';
     if (svgStop)      svgStop.style.display    = 'none';
     if (btnPrev)      btnPrev.style.display    = 'none';
     if (btnNext)      btnNext.style.display    = 'none';
+    
+    // Ocultar botón de Pausa al detener
+    if (btnPause)     btnPause.style.display   = 'none';
   }
 }
 
@@ -1059,10 +1620,24 @@ document.addEventListener('click', e => {
 
   // Cerrar dropdowns si se hace clic fuera de ellos
   if (!e.target.closest('.custom-dropdown')) {
-    document.querySelectorAll('.custom-dropdown').forEach(d => d.classList.remove('active'));
+    document.querySelectorAll('.custom-dropdown').forEach(d => {
+      d.classList.remove('active');
+      _resetDropdownMenuStyle(d.querySelector('.dropdown-menu'));
+    });
   }
 
   // Cerrar alerta personalizada al hacer clic en el overlay
   const alertModal = document.getElementById('custom-alert-modal');
   if (e.target === alertModal) cerrarAlertaPersonalizada();
 });
+
+// Cerrar dropdowns fijos al rotar o hacer scroll (en móvil)
+function _closeAllDropdowns() {
+  document.querySelectorAll('.custom-dropdown.active').forEach(d => {
+    d.classList.remove('active');
+    _resetDropdownMenuStyle(d.querySelector('.dropdown-menu'));
+  });
+}
+window.addEventListener('resize', _closeAllDropdowns, { passive: true });
+// Cerrar al hacer scroll dentro del modal (el menú fijo no se mueve)
+document.addEventListener('scroll', _closeAllDropdowns, { capture: true, passive: true });

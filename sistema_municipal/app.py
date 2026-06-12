@@ -26,11 +26,11 @@
 import os
 import json
 import datetime
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, Response
 from werkzeug.utils import secure_filename
 
 # Módulos del sistema ML
-from ml.ocr_processor import procesar_imagen, procesar_pdf, obtener_datos_ocr
+from ml.ocr_processor import procesar_imagen, procesar_pdf, obtener_datos_ocr, procesar_pdf_generator, obtener_datos_ocr_generator, procesar_imagen_generator
 from ml.clasificador_tramites import ClasificadorTramites
 from ml.selector_cvs import SelectorCV
 
@@ -133,13 +133,13 @@ def procesar_tramite():
     """
     Endpoint: Procesar documento de trámite
     1. Recibe imagen/PDF
-    2. Aplica OCR (pytesseract + OpenCV)
+    2. Aplica OCR (pytesseract + OpenCV) en paralelo
     3. Clasifica con ML (TF-IDF + Random Forest)
     4. Genera alerta para ciudadano
     5. Añade a cola y reordena por prioridad
 
     Request: multipart/form-data con campo 'archivo'
-    Response: JSON con trámite clasificado completo
+    Response: Event stream de progreso + JSON final clasificado
     """
     # ── Validar archivo ──────────────────────────────────
     if 'archivo' not in request.files:
@@ -159,53 +159,64 @@ def procesar_tramite():
     ruta_archivo  = os.path.join(app.config['UPLOAD_FOLDER'], nombre_final)
     archivo.save(ruta_archivo)
 
-    # ── PASO 1: OCR ───────────────────────────────────────
-    es_pdf = nombre_final.lower().endswith('.pdf')
-    if es_pdf:
-        texto_ocr = procesar_pdf(ruta_archivo)
+    def generar_progreso():
+        yield f"data: {json.dumps({'progress': 5, 'message': 'Archivo recibido en el servidor. Iniciando...'})}\n\n"
+        
+        es_pdf = nombre_final.lower().endswith('.pdf')
+        texto_ocr = ""
         confianza_ocr = 0
-    else:
-        datos_ocr     = obtener_datos_ocr(ruta_archivo)
-        texto_ocr     = datos_ocr['texto']
-        confianza_ocr = datos_ocr['confianza_promedio']
+        
+        if es_pdf:
+            for pct, val in procesar_pdf_generator(ruta_archivo):
+                if pct == 100:
+                    texto_ocr = val
+                else:
+                    yield f"data: {json.dumps({'progress': pct, 'message': val})}\n\n"
+        else:
+            for pct, val in obtener_datos_ocr_generator(ruta_archivo):
+                if pct == 100:
+                    texto_ocr = val['texto']
+                    confianza_ocr = val['confianza_promedio']
+                else:
+                    yield f"data: {json.dumps({'progress': pct, 'message': val})}\n\n"
 
-    # ── PASO 2: CLASIFICACIÓN ML ──────────────────────────
-    resultado_ml = clasificador_tramites.clasificar(texto_ocr)
+        yield f"data: {json.dumps({'progress': 92, 'message': 'Clasificando trámite y prioridad con Machine Learning...'})}\n\n"
+        resultado_ml = clasificador_tramites.clasificar(texto_ocr)
+        
+        yield f"data: {json.dumps({'progress': 96, 'message': 'Generando notificaciones de Yau y guardando expediente...'})}\n\n"
+        
+        # ── PASO 3: CONSTRUIR TRAMITE ─────────────────────────
+        numero = generar_numero_expediente()
+        tramite = {
+            'id':                   len(cola_tramites) + 1,
+            'numero':               numero,
+            'fecha_registro':       datetime.datetime.now().strftime('%d/%m/%Y %H:%M'),
+            # OCR
+            'texto_ocr':            texto_ocr,
+            'confianza_ocr_pct':    confianza_ocr,
+            # ML
+            'tipo':                 resultado_ml['tipo'],
+            'prioridad':            resultado_ml['prioridad'],
+            'score':                resultado_ml['score'],
+            'confianza_ml_pct':     resultado_ml['confianza_pct'],
+            'departamento':         resultado_ml['departamento'],
+            'tiempo_estimado_dias': resultado_ml['tiempo_estimado_dias'],
+            'probabilidades_ml':    resultado_ml['probabilidades'],
+            # Estado
+            'estado':               'PENDIENTE',
+            'archivo':              nombre_final,
+        }
 
-    # ── PASO 3: CONSTRUIR TRAMITE ─────────────────────────
-    numero = generar_numero_expediente()
-    tramite = {
-        'id':                   len(cola_tramites) + 1,
-        'numero':               numero,
-        'fecha_registro':       datetime.datetime.now().strftime('%d/%m/%Y %H:%M'),
-        # OCR
-        'texto_ocr':            texto_ocr,
-        'confianza_ocr_pct':    confianza_ocr,
-        # ML
-        'tipo':                 resultado_ml['tipo'],
-        'prioridad':            resultado_ml['prioridad'],
-        'score':                resultado_ml['score'],
-        'confianza_ml_pct':     resultado_ml['confianza_pct'],
-        'departamento':         resultado_ml['departamento'],
-        'tiempo_estimado_dias': resultado_ml['tiempo_estimado_dias'],
-        'probabilidades_ml':    resultado_ml['probabilidades'],
-        # Estado
-        'estado':               'PENDIENTE',
-        'archivo':              nombre_final,
-    }
+        # ── PASO 4: ALERTA CIUDADANO ──────────────────────────
+        tramite['alerta'] = generar_alerta(tramite)
 
-    # ── PASO 4: ALERTA CIUDADANO ──────────────────────────
-    tramite['alerta'] = generar_alerta(tramite)
+        # ── PASO 5: COLA ORDENADA POR PRIORIDAD ──────────────
+        cola_tramites.append(tramite)
+        cola_tramites.sort(key=lambda x: x['score'], reverse=True)
 
-    # ── PASO 5: COLA ORDENADA POR PRIORIDAD ──────────────
-    cola_tramites.append(tramite)
-    cola_tramites.sort(key=lambda x: x['score'], reverse=True)
+        yield f"data: {json.dumps({'progress': 100, 'message': '¡Trámite procesado con éxito!', 'result': {'tramite': tramite, 'posicion_cola': cola_tramites.index(tramite) + 1, 'total_cola': len(cola_tramites)}})}\n\n"
 
-    return jsonify({
-        'tramite':  tramite,
-        'posicion_cola': cola_tramites.index(tramite) + 1,
-        'total_cola':    len(cola_tramites),
-    })
+    return Response(generar_progreso(), mimetype='text/event-stream')
 
 
 @app.route('/api/tramite/cola', methods=['GET'])
@@ -262,7 +273,7 @@ def evaluar_cv():
     5. Genera recomendación y ranking
 
     Request: multipart/form-data con campos 'archivo' y (opcional) 'puesto'
-    Response: JSON con evaluación completa del candidato
+    Response: Event stream de progreso + JSON final de evaluación
     """
     if 'archivo' not in request.files:
         return jsonify({'error': 'No se envió ningún archivo.'}), 400
@@ -280,30 +291,43 @@ def evaluar_cv():
     ruta_archivo  = os.path.join(app.config['UPLOAD_FOLDER'], nombre_final)
     archivo.save(ruta_archivo)
 
-    # ── OCR ────────────────────────────────────────────────
-    es_pdf = nombre_final.lower().endswith('.pdf')
-    texto_cv = procesar_pdf(ruta_archivo) if es_pdf else procesar_imagen(ruta_archivo)
+    def generar_progreso():
+        yield f"data: {json.dumps({'progress': 5, 'message': 'Archivo de CV recibido. Iniciando análisis...'})}\n\n"
+        
+        es_pdf = nombre_final.lower().endswith('.pdf')
+        texto_cv = ""
+        
+        if es_pdf:
+            for pct, val in procesar_pdf_generator(ruta_archivo):
+                if pct == 100:
+                    texto_cv = val
+                else:
+                    yield f"data: {json.dumps({'progress': pct, 'message': val})}\n\n"
+        else:
+            for pct, val in procesar_imagen_generator(ruta_archivo):
+                if pct == 100:
+                    texto_cv = val
+                else:
+                    yield f"data: {json.dumps({'progress': pct, 'message': val})}\n\n"
 
-    # ── EVALUACIÓN ML ──────────────────────────────────────
-    evaluacion = selector_cv.evaluar(texto_cv, nombre_puesto)
+        yield f"data: {json.dumps({'progress': 92, 'message': 'Evaluando aptitudes y perfil profesional del candidato...'})}\n\n"
+        evaluacion = selector_cv.evaluar(texto_cv, nombre_puesto)
 
-    # Agregar metadatos
-    evaluacion['id']              = len(lista_cvs) + 1
-    evaluacion['fecha_registro']  = datetime.datetime.now().strftime('%d/%m/%Y %H:%M')
-    evaluacion['archivo']         = nombre_final
-    evaluacion['texto_ocr']       = texto_cv
+        # Agregar metadatos
+        evaluacion['id']              = len(lista_cvs) + 1
+        evaluacion['fecha_registro']  = datetime.datetime.now().strftime('%d/%m/%Y %H:%M')
+        evaluacion['archivo']         = nombre_final
+        evaluacion['texto_ocr']       = texto_cv
 
-    lista_cvs.append(evaluacion)
+        lista_cvs.append(evaluacion)
 
-    # Ranking actualizado
-    ranking = sorted(lista_cvs, key=lambda x: x['puntaje_total'], reverse=True)
-    posicion = next(i+1 for i, c in enumerate(ranking) if c['id'] == evaluacion['id'])
+        # Ranking actualizado
+        ranking = sorted(lista_cvs, key=lambda x: x['puntaje_total'], reverse=True)
+        posicion = next(i+1 for i, c in enumerate(ranking) if c['id'] == evaluacion['id'])
 
-    return jsonify({
-        'evaluacion':     evaluacion,
-        'posicion_ranking': posicion,
-        'total_cvs':        len(lista_cvs),
-    })
+        yield f"data: {json.dumps({'progress': 100, 'message': '¡CV evaluado con éxito!', 'result': {'evaluacion': evaluacion, 'posicion_ranking': posicion, 'total_cvs': len(lista_cvs)}})}\n\n"
+
+    return Response(generar_progreso(), mimetype='text/event-stream')
 
 
 @app.route('/api/cv/ranking', methods=['GET'])
@@ -351,6 +375,18 @@ def estadisticas():
 # ==========================================================
 # RUTAS — API TEXT-TO-SPEECH (Edge TTS)
 # ==========================================================
+VOICES_MAP = {
+    'femenina':      'es-MX-DaliaNeural',      # Sofía (México)
+    'masculina':     'es-MX-JorgeNeural',     # Mateo (México)
+    'es-es-elvira':  'es-ES-ElviraNeural',     # Elvira (España)
+    'es-es-alvaro':  'es-ES-AlvaroNeural',     # Álvaro (España)
+    'es-co-salome':  'es-CO-SalomeNeural',     # Salomé (Colombia)
+    'es-co-gonzalo': 'es-CO-GonzaloNeural',    # Gonzalo (Colombia)
+    'es-ar-elena':   'es-AR-ElenaNeural',      # Elena (Argentina)
+    'es-ar-tomas':   'es-AR-TomasNeural'       # Tomás (Argentina)
+}
+
+
 def generar_audio_tts(text, voice):
     """
     Genera el archivo de audio MP3 y el archivo de boundaries JSON
@@ -417,7 +453,7 @@ def preload_tts_cache():
         "Trámite registrado correctamente",
         "Procesando documento"
     ]
-    voces = ["es-MX-DaliaNeural", "es-MX-JorgeNeural"]
+    voces = list(VOICES_MAP.values())
     for t in textos:
         for v in voces:
             try:
@@ -440,10 +476,7 @@ def text_to_speech():
     if not text:
         return jsonify({'error': 'No se proporcionó texto.'}), 400
         
-    if voice_type == 'masculina':
-        voice = 'es-MX-JorgeNeural'
-    else:
-        voice = 'es-MX-DaliaNeural'
+    voice = VOICES_MAP.get(voice_type, 'es-MX-DaliaNeural')
         
     try:
         filename, boundaries = generar_audio_tts(text, voice)

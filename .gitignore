@@ -1,0 +1,30 @@
+# Entornos virtuales de Python
+venv/
+.venv/
+env/
+
+# Caché de compilación de Python
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos de subida de usuario y archivos temporales
+sistema_municipal/uploads/*
+# Excepto el archivo .gitkeep si decides mantener la carpeta vacía en Git
+!sistema_municipal/uploads/.gitkeep
+
+# Caché de audio de Text-To-Speech (TTS)
+sistema_municipal/static/audio/*
+!sistema_municipal/static/audio/.gitkeep
+
+# Modelos entrenados o binarios pesados (opcional, pero recomendado si son muy grandes)
+# sistema_municipal/ml/modelos/*.pkl
+
+# Dependencias locales externas (como Poppler)
+poppler-26.02.0/
+
+# Configuración del IDE (VS Code, PyCharm, etc.)
+.vscode/
+.idea/
+.DS_Store
