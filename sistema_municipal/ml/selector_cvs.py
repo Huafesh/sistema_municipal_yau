@@ -223,7 +223,8 @@ class SelectorCV:
         matches = re.findall(r'(\d+)\s*(?:años?|anios?)\s*(?:de\s*)?(?:experiencia|trabajo|laboral)', texto)
         if not matches:
             return 0
-        return max(int(m) for m in matches)
+        anios = max(int(m) for m in matches)
+        return min(50, anios)
 
     def _extraer_habilidades(self, texto: str) -> list:
         return [h.title() for h in HABILIDADES_TECNICAS if h in texto]

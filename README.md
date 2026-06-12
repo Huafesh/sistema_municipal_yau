@@ -8,6 +8,7 @@ Un sistema moderno, inteligente y accesible diseñado para optimizar el flujo de
 
 ### 🔍 1. Procesamiento OCR de Alta Calidad
 * Transcripción instantánea de documentos digitalizados en formato **PDF** e **Imágenes** (PNG, JPEG).
+* **Procesamiento 100% en memoria para PDFs:** Optimización paralela multihilo que preprocesa y digitaliza páginas en memoria RAM sin necesidad de escribir archivos temporales en el disco duro, eliminando latencia de I/O de disco y acelerando los tiempos de respuesta.
 * Limpieza y preparación visual de texto automático.
 * Visualizador integrado en ventana modal con opciones de accesibilidad.
 
@@ -24,6 +25,7 @@ Un sistema moderno, inteligente y accesible diseñado para optimizar el flujo de
   * 🇦🇷 **Elena y Tomás** (Argentina)
 * Resaltado dinámico palabra por palabra en tiempo real mientras el texto es leído en pantalla.
 * Ajuste de volumen y velocidad de lectura.
+* **Pre-carga no bloqueante:** El precalentamiento de la caché de audios TTS se realiza en un hilo de fondo de manera asíncrona, garantizando un arranque instantáneo del servidor en menos de 1 segundo.
 
 ### 🌈 4. Interfaz Premium y Animaciones "Aurora" Reactivas
 * **Borde Aurora Reactivo:** Un espectacular contorno con gradiente animado en el visualizador OCR que se mueve y pulsa en tiempo real según el volumen y la frecuencia del audio (utilizando la API de Web Audio de HTML5).
@@ -33,6 +35,11 @@ Un sistema moderno, inteligente y accesible diseñado para optimizar el flujo de
 ### 📱 5. Diseño 100% Responsivo
 * Adaptabilidad completa en teléfonos móviles, tablets y monitores ultraanchos.
 * Menús contextuales de voz dinámicos (fixed positioning) adaptados para un uso cómodo en pantallas táctiles de dispositivos móviles.
+
+### 🧹 6. Limpieza Automática de Almacenamiento
+* Un recolector de basura automatizado en segundo plano que detecta y elimina archivos de subidas (`uploads/`) y caché de audios (`static/audio/`) con más de 24 horas de antigüedad.
+* Previene de forma autónoma la saturación del espacio en disco por acumulación de documentos o audios antiguos, preservando la estructura del repositorio mediante archivos `.gitkeep`.
+
 
 ---
 

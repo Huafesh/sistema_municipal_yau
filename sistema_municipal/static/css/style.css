@@ -180,6 +180,9 @@ header {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  margin: 0;
+  padding: 0;
+  line-height: inherit;
 }
 .h-sub {
   font-size: 13px;

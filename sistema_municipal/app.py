@@ -78,6 +78,35 @@ def generar_numero_expediente() -> str:
     return f"YAU-{anio}-{n:04d}"
 
 
+def limpiar_archivos_antiguos(dias=1):
+    """
+    Limpia archivos de las carpetas de uploads y static/audio
+    que tengan más de 'dias' de antigüedad, preservando .gitkeep
+    """
+    import time
+    ahora = time.time()
+    limite_tiempo = ahora - (dias * 24 * 3600)
+    
+    carpetas = [
+        os.path.join(app.root_path, app.config['UPLOAD_FOLDER']),
+        os.path.join(app.root_path, 'static', 'audio')
+    ]
+    
+    for carpeta in carpetas:
+        if not os.path.exists(carpeta):
+            continue
+        for nombre_archivo in os.listdir(carpeta):
+            if nombre_archivo == '.gitkeep':
+                continue
+            ruta_completa = os.path.join(carpeta, nombre_archivo)
+            try:
+                if os.path.isfile(ruta_completa) and os.path.getmtime(ruta_completa) < limite_tiempo:
+                    os.remove(ruta_completa)
+                    print(f"[Limpieza] Archivo antiguo eliminado: {nombre_archivo}")
+            except Exception as e:
+                print(f"[Limpieza] Error al eliminar {ruta_completa}: {e}")
+
+
 def generar_alerta(tramite: dict) -> dict:
     """
     Genera el mensaje de notificación para el ciudadano
@@ -141,6 +170,10 @@ def procesar_tramite():
     Request: multipart/form-data con campo 'archivo'
     Response: Event stream de progreso + JSON final clasificado
     """
+    # Limpiar archivos antiguos en un hilo de fondo
+    import threading
+    threading.Thread(target=limpiar_archivos_antiguos, daemon=True).start()
+
     # ── Validar archivo ──────────────────────────────────
     if 'archivo' not in request.files:
         return jsonify({'error': 'No se envió ningún archivo.'}), 400
@@ -275,6 +308,10 @@ def evaluar_cv():
     Request: multipart/form-data con campos 'archivo' y (opcional) 'puesto'
     Response: Event stream de progreso + JSON final de evaluación
     """
+    # Limpiar archivos antiguos en un hilo de fondo
+    import threading
+    threading.Thread(target=limpiar_archivos_antiguos, daemon=True).start()
+
     if 'archivo' not in request.files:
         return jsonify({'error': 'No se envió ningún archivo.'}), 400
 
@@ -428,7 +465,17 @@ def generar_audio_tts(text, voice):
                             "end": (chunk["offset"] + chunk["duration"]) / 10000000.0
                         })
         
-        asyncio.run(run_tts())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+            
+        if loop and loop.is_running():
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor() as executor:
+                executor.submit(asyncio.run, run_tts()).result()
+        else:
+            asyncio.run(run_tts())
         
         with open(json_filepath, 'w', encoding='utf-8') as f:
             json.dump(boundaries, f)
@@ -495,8 +542,13 @@ if __name__ == '__main__':
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     os.makedirs('ml/modelos', exist_ok=True)
     
+    # Limpieza inicial de archivos antiguos
+    import threading
+    threading.Thread(target=limpiar_archivos_antiguos, daemon=True).start()
+    
+    # Pre-cargar caché de TTS en un hilo de fondo para evitar demoras en el inicio
     try:
-        preload_tts_cache()
+        threading.Thread(target=preload_tts_cache, daemon=True).start()
     except Exception as e:
         print("Error pre-cargando caché de TTS:", e)
 

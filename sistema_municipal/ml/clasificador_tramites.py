@@ -176,8 +176,12 @@ class ClasificadorTramites:
     def _inicializar(self):
         """Carga modelo guardado; si no existe, lo entrena."""
         if os.path.exists(RUTA_MODELO):
-            self._cargar_modelo()
-            print("[ClasificadorTramites] Modelo cargado desde disco.")
+            try:
+                self._cargar_modelo()
+                print("[ClasificadorTramites] Modelo cargado desde disco.")
+            except Exception as e:
+                print(f"[ClasificadorTramites] Error al cargar modelo guardado: {e}. Reentrenando...")
+                self._entrenar()
         else:
             print("[ClasificadorTramites] Entrenando nuevo modelo...")
             self._entrenar()

@@ -23,23 +23,30 @@ if sys.platform == 'win32':
         os.environ['TESSDATA_PREFIX'] = local_tessdata
 
 
-def preprocesar_imagen(ruta_imagen: str) -> np.ndarray:
+def preprocesar_imagen(origen) -> np.ndarray:
     """
     Preprocesa la imagen para mejorar la precisión del OCR.
     Aplica: escala de grises → reducción de ruido → binarización adaptativa
             → operaciones morfológicas
 
     Args:
-        ruta_imagen: Ruta del archivo de imagen
+        origen: Ruta del archivo de imagen (str), objeto PIL Image o array NumPy (OpenCV)
 
     Returns:
         Imagen procesada como array NumPy
     """
-    img = cv2.imread(ruta_imagen)
-
-    if img is None:
-        # Intentar cargar con PIL si OpenCV falla
-        img_pil = Image.open(ruta_imagen).convert("RGB")
+    if isinstance(origen, str):
+        img = cv2.imread(origen)
+        if img is None:
+            # Intentar cargar con PIL si OpenCV falla
+            img_pil = Image.open(origen).convert("RGB")
+            img = np.array(img_pil)
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    elif isinstance(origen, np.ndarray):
+        img = origen.copy()
+    else:
+        # Asumir que es una imagen PIL
+        img_pil = origen.convert("RGB")
         img = np.array(img_pil)
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
@@ -148,19 +155,18 @@ def procesar_pdf_generator(ruta_pdf: str):
 
         yield 30, f"Iniciando OCR en paralelo ({paginas_a_procesar} páginas)..."
 
-        # Función auxiliar para procesar una página individual
+        # Función auxiliar para procesar una página individual en memoria
         def procesar_pagina_individual(arg_tuple):
             idx, pagina = arg_tuple
-            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-                ruta_temp = tmp.name
-
             try:
-                pagina.save(ruta_temp, "JPEG")
-                texto_pagina = procesar_imagen(ruta_temp)
-                return idx, f"--- Página {idx+1} ---\n{texto_pagina}"
-            finally:
-                if os.path.exists(ruta_temp):
-                    os.remove(ruta_temp)
+                img_procesada = preprocesar_imagen(pagina)
+                config_tesseract = "--oem 3 --psm 6 -l spa"
+                texto_raw = pytesseract.image_to_string(img_procesada, config=config_tesseract)
+                texto_limpio = limpiar_texto(texto_raw)
+                return idx, f"--- Página {idx+1} ---\n{texto_limpio}"
+            except Exception as e:
+                print(f"Error procesando página {idx+1}: {e}")
+                return idx, f"--- Página {idx+1} ---\nError en OCR: {str(e)}"
 
         # Determinar número óptimo de hilos concurrentes
         cpu_cores = multiprocessing.cpu_count() or 4
