@@ -1882,9 +1882,6 @@ input[type="text"]:focus {
 }
 
 /* Clases de Temas de Contraste para el Visualizador Modal */
-.ocr-modal-pre.theme-default {
-  /* Mantiene los colores normales */
-}
 
 .ocr-modal-pre.theme-high-contrast-dark {
   background-color: #000000 !important;
